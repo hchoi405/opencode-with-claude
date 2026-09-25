@@ -95,7 +95,8 @@ OpenCode 2 (`plugins` and `providers.<id>.settings` instead of `plugin` and
 
 In both cases the `baseURL` is only a placeholder: the plugin rewrites every
 Anthropic request to whatever port its own proxy actually got, so several
-OpenCode instances can run side by side.
+OpenCode instances can run side by side. With Sleev configured as below,
+OpenCode 1.x keeps Sleev as the provider URL instead.
 
 If you installed with Homebrew, point the plugin entry at the installed
 file instead of the package name (the path is stable across upgrades, and
@@ -123,6 +124,35 @@ opencode
 - **npm:** `npm update -g opencode-with-claude`. Note that OpenCode caches
   plugins it installs by package name; if a new version is not picked up,
   clear `~/.cache/opencode/node_modules/opencode-with-claude` and restart.
+
+### Using Sleev
+
+On OpenCode 1.x, if [Sleev](https://sleev.dev) already fronts the Anthropic provider,
+keep the provider pointed at Sleev and use its standard headers:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["opencode-with-claude"],
+  "provider": {
+    "anthropic": {
+      "options": {
+        "baseURL": "http://127.0.0.1:17321",
+        "apiKey": "dummy",
+        "headers": {
+          "sleev-provider": "anthropic",
+          "sleev-harness": "opencode"
+        }
+      }
+    }
+  }
+}
+```
+
+The plugin preserves Sleev's `baseURL`, replaces `sleev-provider` with a
+`sleev-base-url` pointing at the embedded Meridian proxy, and keeps the
+OpenCode session headers. Requests then follow
+`OpenCode -> Sleev -> Meridian -> Claude`.
 
 ## Profiles and SDK features
 

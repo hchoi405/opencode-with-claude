@@ -141,6 +141,33 @@ test("config hook creates options when missing on the anthropic provider", async
   assert.match(input.provider.anthropic.options.baseURL, /^http:\/\//)
 })
 
+test("config hook routes Sleev through the embedded proxy", async () => {
+  const input = {
+    provider: {
+      anthropic: {
+        options: {
+          baseURL: "http://127.0.0.1:17321",
+          headers: {
+            "sleev-provider": "anthropic",
+            "sleev-harness": "opencode",
+            keep: "me",
+          },
+        },
+      },
+    },
+  }
+
+  await hooks.config(input)
+  await hooks.config(input)
+
+  const options = input.provider.anthropic.options
+  assert.equal(options.baseURL, "http://127.0.0.1:17321")
+  assert.equal(options.headers["sleev-provider"], undefined)
+  assert.equal(options.headers["sleev-harness"], "opencode")
+  assert.match(options.headers["sleev-base-url"], /^http:\/\/.+:\d+$/)
+  assert.equal(options.headers.keep, "me")
+})
+
 test("config hook is a no-op when no anthropic provider exists", async () => {
   const input = { provider: { openai: { options: { baseURL: "other" } } } }
   await hooks.config(input)

@@ -137,7 +137,7 @@ const server: Plugin = async ({ client }) => {
   const { baseURL } = await acquireRuntime(log)
 
   return {
-    // Set the base URL for the Anthropic provider
+    // Route directly to Meridian, or through Sleev when it already fronts Anthropic.
     async config(input) {
       for (const [name, agent] of Object.entries(input.agent ?? {})) {
         if (!agent?.mode) continue
@@ -146,8 +146,18 @@ const server: Plugin = async ({ client }) => {
 
       const anthropic = input.provider?.anthropic
       if (!anthropic) return
-      if (!anthropic.options) anthropic.options = {}
-      anthropic.options.baseURL = baseURL
+      const options = (anthropic.options ??= {})
+      const headers = options.headers as Record<string, string> | undefined
+      if (
+        headers &&
+        ("sleev-provider" in headers || "sleev-base-url" in headers)
+      ) {
+        delete headers["sleev-provider"]
+        headers["sleev-harness"] ??= "opencode"
+        headers["sleev-base-url"] = baseURL
+        return
+      }
+      options.baseURL = baseURL
     },
 
     async "chat.message"(input, output) {
