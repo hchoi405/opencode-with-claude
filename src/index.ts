@@ -11,6 +11,7 @@ import {
   type RequestIdentity,
 } from "./headers"
 import { createConsoleLogger, createLogger, type LogFn } from "./logger"
+import { createSleevFetch, type Fetch } from "./sleev-fetch"
 import {
   loadMeridianConfig,
   summarizeMeridianConfig,
@@ -129,6 +130,7 @@ const server: Plugin = async ({ client }) => {
   const log = createLogger(client)
   const agentModes = new Map<string, string>()
   const humanMessages = new Map<string, true>()
+  const sleevFetches = new WeakMap<Fetch, Fetch>()
 
   const messageKey = (sessionID: string, messageID: string) =>
     `${sessionID}\u0000${messageID}`
@@ -155,6 +157,14 @@ const server: Plugin = async ({ client }) => {
         delete headers["sleev-provider"]
         headers["sleev-harness"] ??= "opencode"
         headers["sleev-base-url"] = baseURL
+        const fetchRequest = typeof options.fetch === "function" ? options.fetch as Fetch : fetch
+        let wrapped = sleevFetches.get(fetchRequest)
+        if (!wrapped) {
+          wrapped = createSleevFetch(baseURL, log, fetchRequest)
+          sleevFetches.set(fetchRequest, wrapped)
+          sleevFetches.set(wrapped, wrapped)
+        }
+        options.fetch = wrapped
         return
       }
       options.baseURL = baseURL

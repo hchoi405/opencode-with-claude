@@ -158,6 +158,7 @@ test("config hook routes Sleev through the embedded proxy", async () => {
   }
 
   await hooks.config(input)
+  const transport = input.provider.anthropic.options.fetch
   await hooks.config(input)
 
   const options = input.provider.anthropic.options
@@ -166,6 +167,24 @@ test("config hook routes Sleev through the embedded proxy", async () => {
   assert.equal(options.headers["sleev-harness"], "opencode")
   assert.match(options.headers["sleev-base-url"], /^http:\/\/.+:\d+$/)
   assert.equal(options.headers.keep, "me")
+  assert.equal(typeof options.fetch, "function")
+  assert.equal(options.fetch, transport, "config reload must not nest transports")
+})
+
+test("Sleev transport preserves an existing custom provider fetch", async () => {
+  let calls = 0
+  const response = new Response("custom fetch")
+  const customFetch = async () => { calls++; return response }
+  const input = {
+    provider: {
+      anthropic: {
+        options: { fetch: customFetch, headers: { "sleev-provider": "anthropic" } },
+      },
+    },
+  }
+  await hooks.config(input)
+  assert.equal(await input.provider.anthropic.options.fetch("http://fixture.invalid/v1/models"), response)
+  assert.equal(calls, 1)
 })
 
 test("config hook is a no-op when no anthropic provider exists", async () => {

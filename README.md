@@ -154,6 +154,14 @@ The plugin preserves Sleev's `baseURL`, replaces `sleev-provider` with a
 OpenCode session headers. Requests then follow
 `OpenCode -> Sleev -> Meridian -> Claude`.
 
+On interruption, the plugin also sends a cancel directly to Meridian, including
+during streaming. This covers Sleev 1.8.8's pre-header disconnect gap and Bun
+transport cancellation gaps, which otherwise leave the old turn running and
+can reject the next prompt with
+"This session advanced while the request was waiting." A follow-up waits for
+that cancellation request, and retries this specific pre-inference conflict at
+most once if Meridian is still finishing cancellation cleanup.
+
 ## Profiles and SDK features
 
 The plugin now reads the same Meridian configuration files the `meridian` CLI
