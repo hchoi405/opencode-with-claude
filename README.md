@@ -96,7 +96,7 @@ OpenCode 2 (`plugins` and `providers.<id>.settings` instead of `plugin` and
 In both cases the `baseURL` is only a placeholder: the plugin rewrites every
 Anthropic request to whatever port its own proxy actually got, so several
 OpenCode instances can run side by side. With Sleev configured as below,
-OpenCode 1.x keeps Sleev as the provider URL instead.
+both generations keep Sleev as the provider URL instead.
 
 If you installed with Homebrew, point the plugin entry at the installed
 file instead of the package name (the path is stable across upgrades, and
@@ -127,8 +127,10 @@ opencode
 
 ### Using Sleev
 
-On OpenCode 1.x, if [Sleev](https://sleev.dev) already fronts the Anthropic provider,
+If [Sleev](https://sleev.dev) already fronts the Anthropic provider,
 keep the provider pointed at Sleev and use its standard headers:
+
+OpenCode 1.x:
 
 ```json
 {
@@ -149,15 +151,40 @@ keep the provider pointed at Sleev and use its standard headers:
 }
 ```
 
+OpenCode 2:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["opencode-with-claude"],
+  "providers": {
+    "anthropic": {
+      "settings": {
+        "baseURL": "http://127.0.0.1:17321",
+        "apiKey": "dummy"
+      },
+      "headers": {
+        "sleev-provider": "anthropic",
+        "sleev-harness": "opencode"
+      }
+    }
+  }
+}
+```
+
 The plugin preserves Sleev's `baseURL`, replaces `sleev-provider` with a
 `sleev-base-url` pointing at the embedded Meridian proxy, and keeps the
 OpenCode session headers. Requests then follow
 `OpenCode -> Sleev -> Meridian -> Claude`.
 
-On interruption, the plugin also sends a cancel directly to Meridian, including
-during streaming. This covers Sleev 1.8.8's pre-header disconnect gap and Bun
-transport cancellation gaps, which otherwise leave the old turn running and
-can reject the next prompt with
+OpenCode 2 chooses the route in `http.request`, after provider headers have
+been merged into the native HTTP request. Without Sleev headers, it routes
+directly to Meridian as before.
+
+On OpenCode 1.x interruption, the plugin also sends a cancel directly to
+Meridian, including during streaming. This covers Sleev 1.8.8's pre-header
+disconnect gap and Bun transport cancellation gaps, which otherwise leave
+the old turn running and can reject the next prompt with
 "This session advanced while the request was waiting." A follow-up waits for
 that cancellation request, and retries this specific pre-inference conflict at
 most once if Meridian is still finishing cancellation cleanup.
@@ -370,9 +397,10 @@ directory, for example `"plugins": ["/path/to/opencode-with-claude/dist"]`.
 `dist/index.js` has a single default export with `id`, `server()` and
 `setup()`. OpenCode 1.x calls `server()` and uses the returned hooks
 (`config`, `chat.headers`, ...). OpenCode 2 calls `setup(ctx)` and the plugin
-registers `session.hook("model.request")` (base URL and Meridian headers),
-`session.hook("http.request")` (drops the `anthropic-beta` header OpenCode's
-Anthropic transport re-adds after `model.request` — Meridian talks to the
+registers `session.hook("model.request")` (Meridian session headers),
+`session.hook("http.request")` (selects direct Meridian or Sleev routing and
+drops the `anthropic-beta` header OpenCode's Anthropic transport re-adds after
+`model.request` — Meridian talks to the
 Claude Agent SDK, which refuses custom betas on subscription auth), and the
 system-prompt hooks on the context. The module deliberately has no other
 exports: OpenCode 1.17 and 1.18 load every export as a plugin, so a second one

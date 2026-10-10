@@ -264,8 +264,8 @@ const setup: OpenCodeV2.Plugin["setup"] = async (ctx) => {
   const registrations: Registration[] = []
 
   const { release, baseURL } = await acquireRuntime(log)
-  // The Anthropic SDK resolves `/messages` (and `/models`) against this, so
-  // it needs the version segment that v1 provider config used to carry.
+  // Native Anthropic message requests need the version segment that v1
+  // provider config used to carry.
   const anthropicBaseURL = `${baseURL}/v1`
 
   const dispose = async () => {
@@ -297,7 +297,9 @@ const setup: OpenCodeV2.Plugin["setup"] = async (ctx) => {
       await ctx.session.hook(
         "model.request",
         (input) => {
-          input.baseURL = anthropicBaseURL
+          // Provider headers (including Sleev's) are merged later, during
+          // protocol lowering. Leave the endpoint intact until http.request
+          // can choose between Sleev and the embedded Meridian proxy.
           applyMeridianHeaders(input.headers, identityV2(input, agentModes))
         },
         { providerID: ANTHROPIC },
@@ -317,7 +319,23 @@ const setup: OpenCodeV2.Plugin["setup"] = async (ctx) => {
       await ctx.session.hook(
         "http.request",
         (input) => {
-          input.request.headers.delete("anthropic-beta")
+          const { request } = input
+          request.headers.delete("anthropic-beta")
+          if (
+            request.headers.has("sleev-provider") ||
+            request.headers.has("sleev-base-url")
+          ) {
+            request.headers.delete("sleev-provider")
+            if (!request.headers.has("sleev-harness")) {
+              request.headers.set("sleev-harness", "opencode")
+            }
+            request.headers.set("sleev-base-url", baseURL)
+            return
+          }
+
+          const url = new URL(`${anthropicBaseURL}/messages`)
+          url.search = new URL(request.url).search
+          input.request = new Request(url, request)
         },
         { providerID: ANTHROPIC },
       ),

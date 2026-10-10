@@ -25,7 +25,15 @@ const listenerCounts = () => ["exit", "SIGINT", "SIGTERM"].map((event) =>
 
 async function proxyURL(context) {
   const input = await context.emit("model.request", modelRequest())
-  return input.baseURL.replace(/\/v1$/, "")
+  const { request } = await context.emit("http.request", {
+    ...input,
+    request: new Request(`${input.baseURL ?? "https://api.anthropic.com/v1"}/messages`, {
+      method: "POST",
+      headers: input.headers,
+      body: "{}",
+    }),
+  })
+  return new URL(request.url).origin
 }
 
 function makeContext() {
@@ -196,7 +204,7 @@ test("http.request strips the beta header OpenCode re-adds after model.request",
 test("http.request leaves non-anthropic providers alone", async () => {
   const request = new Request("http://example.test/v1/messages", {
     method: "POST",
-    headers: { "anthropic-beta": "some-beta" },
+    headers: { "anthropic-beta": "some-beta", "sleev-provider": "openai" },
     body: "{}",
   })
 
@@ -209,6 +217,8 @@ test("http.request leaves non-anthropic providers alone", async () => {
   })
 
   assert.equal(input.request.headers.get("anthropic-beta"), "some-beta")
+  assert.equal(input.request.headers.get("sleev-provider"), "openai")
+  assert.equal(input.request, request)
 })
 
 test("setup logs the proxy URL to stderr (v2 has no plugin log API)", () => {
@@ -217,20 +227,112 @@ test("setup logs the proxy URL to stderr (v2 has no plugin log API)", () => {
   assert.match(ready, /^\[opencode-with-claude\] info: /)
 })
 
-test("model.request points anthropic at the proxy's /v1 and adds session headers", async () => {
-  const ready = stderrLines.find((line) => line.includes("proxy ready at http://"))
-  const proxyURL = ready.slice(ready.indexOf("http://"))
-
+test("model.request preserves the configured endpoint and adds session headers", async () => {
   const input = await ctx.emit("model.request", modelRequest({
+    baseURL: "https://api.anthropic.com/v1",
     headers: { "anthropic-beta": "some-flag", keep: "me" },
   }))
-  assert.equal(input.baseURL, `${proxyURL}/v1`)
+  assert.equal(input.baseURL, "https://api.anthropic.com/v1")
   assert.equal(input.headers["anthropic-beta"], undefined)
   assert.equal(input.headers.keep, "me")
   assert.equal(input.headers["x-opencode-session"], "sess-v2")
   assert.equal(input.headers["x-opencode-agent-name"], "build")
   assert.equal(input.headers["x-opencode-agent-mode"], "primary")
   assert.equal(input.headers["x-meridian-source"], undefined)
+})
+
+test("http.request routes directly to Meridian without Sleev and preserves the request", async () => {
+  const controller = new AbortController()
+  const body = JSON.stringify({ model: "claude-sonnet-4-5", messages: [], stream: true })
+  const request = new Request("https://api.anthropic.com/v1/messages?fixture=direct", {
+    method: "POST",
+    headers: {
+      "x-api-key": "fixture-key",
+      "x-opencode-session": "sess-v2",
+      "sleev-harness": "opencode",
+    },
+    body,
+    signal: controller.signal,
+  })
+  const input = await ctx.emit("http.request", { ...modelRequest(), request })
+
+  assert.equal(input.request.url, `${await proxyURL(ctx)}/v1/messages?fixture=direct`)
+  assert.equal(input.request.method, "POST")
+  assert.equal(input.request.headers.get("x-api-key"), "fixture-key")
+  assert.equal(input.request.headers.get("x-opencode-session"), "sess-v2")
+  assert.equal(await input.request.clone().text(), body)
+  controller.abort()
+  assert.equal(input.request.signal.aborted, true)
+})
+
+for (const marker of ["sleev-provider", "sleev-base-url"]) {
+  test(`http.request preserves Sleev when ${marker} arrives after model.request`, async () => {
+    const gateway = "http://127.0.0.1:17321"
+    // OpenCode adds provider headers during protocol lowering, AFTER the
+    // model.request hook. Checking only that hook's headers misses Sleev.
+    const model = await ctx.emit("model.request", modelRequest({ baseURL: gateway }))
+    assert.equal(model.baseURL, gateway)
+    assert.equal(model.headers[marker], undefined)
+    const body = JSON.stringify({ model: "claude-sonnet-4-5", messages: [], stream: true })
+    const request = new Request(`${model.baseURL}/edge/v1/messages?fixture=sleev`, {
+      method: "POST",
+      headers: {
+        ...model.headers,
+        [marker]: marker === "sleev-provider" ? "anthropic" : "http://127.0.0.1:9999",
+        "sleev-harness": "custom-harness",
+        "anthropic-beta": "interleaved-thinking-2025-05-14",
+        "x-api-key": "fixture-key",
+        keep: "me",
+      },
+      body,
+    })
+    const input = await ctx.emit("http.request", { ...model, request })
+    const transport = input.request
+    // A later pass must recognize the replaced marker too, without nesting
+    // URL prefixes or sending the request directly to Meridian.
+    await ctx.emit("http.request", input)
+
+    assert.equal(input.request, transport)
+    assert.equal(input.request.url, `${gateway}/edge/v1/messages?fixture=sleev`)
+    assert.equal(input.request.headers.get("sleev-provider"), null)
+    assert.equal(input.request.headers.get("sleev-base-url"), await proxyURL(ctx))
+    assert.equal(input.request.headers.get("sleev-harness"), "custom-harness")
+    assert.equal(input.request.headers.get("anthropic-beta"), null)
+    assert.equal(input.request.headers.get("x-api-key"), "fixture-key")
+    assert.equal(input.request.headers.get("x-opencode-session"), "sess-v2")
+    assert.equal(input.request.headers.get("keep"), "me")
+    assert.equal(await input.request.text(), body)
+  })
+}
+
+test("http.request handles mixed-case Sleev headers and defaults the harness", async () => {
+  const request = new Request("http://127.0.0.1:17321/messages", {
+    method: "POST",
+    headers: { "Sleev-Provider": "anthropic", "Sleev-Base-Url": "http://stale.invalid" },
+    body: "{}",
+  })
+  const input = await ctx.emit("http.request", { ...modelRequest(), request })
+
+  assert.equal(input.request.url, request.url)
+  assert.equal(input.request.headers.get("sleev-provider"), null)
+  assert.equal(input.request.headers.get("sleev-base-url"), await proxyURL(ctx))
+  assert.equal(input.request.headers.get("sleev-harness"), "opencode")
+})
+
+test("http.request keeps Sleev title requests detached from the session lease", async () => {
+  const model = await ctx.emit("model.request", modelRequest({ kind: "title", agent: "title" }))
+  const request = new Request("http://127.0.0.1:17321/messages", {
+    method: "POST",
+    headers: { ...model.headers, "sleev-provider": "anthropic" },
+    body: "{}",
+  })
+  const input = await ctx.emit("http.request", { ...model, request })
+
+  assert.equal(input.request.url, request.url)
+  assert.equal(input.request.headers.get("sleev-base-url"), await proxyURL(ctx))
+  assert.equal(input.request.headers.get("x-opencode-session"), null)
+  assert.equal(input.request.headers.get("x-meridian-source"), "subagent-title")
+  assert.equal(input.request.headers.get("x-opencode-agent-mode"), "subagent")
 })
 
 test("model.request leaves other providers alone", async () => {
